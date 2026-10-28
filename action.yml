@@ -1,0 +1,32 @@
+name: Safegate PostgreSQL migration scan
+description: Scan PostgreSQL migration files for operational risks.
+inputs:
+  files:
+    description: SQL file glob to scan.
+    required: false
+    default: '**/*.sql'
+  fail-on:
+    description: Exit non-zero on block, review, or never.
+    required: false
+    default: block
+  pg-version:
+    description: PostgreSQL target major version.
+    required: false
+    default: '16'
+  github-token:
+    description: Token used to post a pull request report and check run.
+    required: false
+  config:
+    description: Optional path to .safegate.toml.
+    required: false
+outputs:
+  status:
+    description: Scan status (SAFE, REVIEW, BLOCK, or UNKNOWN).
+  findings-count:
+    description: Number of findings in the JSON report.
+branding:
+  icon: shield
+  color: blue
+runs:
+  using: docker
+  image: Dockerfile.action
