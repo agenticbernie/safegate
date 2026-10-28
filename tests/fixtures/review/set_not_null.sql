@@ -1,0 +1,2 @@
+ALTER TABLE widgets
+    ALTER COLUMN owner_id SET NOT NULL;

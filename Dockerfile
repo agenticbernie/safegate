@@ -1,0 +1,25 @@
+FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
+
+FROM python:3.12-slim
+
+COPY --from=uv /uv /uvx /bin/
+
+WORKDIR /opt/safegate
+
+ENV UV_PROJECT_ENVIRONMENT=/opt/safegate/.venv \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/opt/safegate/.venv/bin:$PATH"
+
+COPY pyproject.toml uv.lock ./
+COPY README.md ./
+COPY src ./src
+
+RUN uv sync --locked --no-dev --group build --no-build-isolation --no-editable \
+    && groupadd --system safegate \
+    && useradd --system --gid safegate --home-dir /nonexistent safegate \
+    && chown -R safegate:safegate /opt/safegate
+
+USER safegate
+
+ENTRYPOINT ["safegate", "scan"]

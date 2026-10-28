@@ -1,0 +1,35 @@
+name: Action smoke
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: write
+
+jobs:
+  action-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Run Safegate
+        id: first
+        uses: ./
+        with:
+          files: tests/fixtures/safe/clean.sql
+          fail-on: never
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Re-run Safegate to verify comment update
+        uses: ./
+        with:
+          files: tests/fixtures/safe/clean.sql
+          fail-on: never
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Assert one Safegate report comment exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          count="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --jq '.[] | select(.body | contains("<!-- safegate-report-v1 -->")) | .id' | wc -l)"
+          test "$count" -eq 1

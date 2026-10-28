@@ -1,0 +1,38 @@
+[project]
+name = "safegate"
+version = "0.1.0"
+description = "Static PostgreSQL migration safety analysis"
+readme = "README.md"
+authors = [
+    { name = "agenticbernie", email = "agenticbernie@gmail.com" }
+]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pglast==6.17",
+    "pydantic>=2.0,<3.0",
+    "rich>=13.0,<16.0",
+    "typer>=0.12,<1.0",
+]
+
+[project.scripts]
+safegate = "safegate.cli:main"
+safegate-action = "safegate.github.action:main"
+
+[dependency-groups]
+build = ["uv_build==0.13.5"]
+dev = [
+    "mypy>=1.10,<2.0",
+    "pytest>=8.0,<10.0",
+    "pytest-cov>=5.0,<8.0",
+    "ruff>=0.6,<1.0",
+]
+
+[build-system]
+requires = ["uv_build==0.13.5"]
+build-backend = "uv_build"
+
+[tool.ruff]
+extend-exclude = ["gstack"]
+
+[tool.mypy]
+mypy_path = "typings"
