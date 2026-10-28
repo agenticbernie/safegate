@@ -11,7 +11,11 @@ def _alter_commands(statement: object) -> tuple[object, ...]:
 
 
 def _column_constraints(column: object) -> tuple[object, ...]:
-    return tuple(getattr(column, "constraints", ()))
+    if not column:
+        return ()
+    # pglast thường trả về None thay vì list rỗng cho các thuộc tính không có giá trị
+    constraints = getattr(column, "constraints", None)
+    return tuple(constraints) if constraints else ()
 
 
 class AddColumnDefaultRule:
