@@ -10,6 +10,18 @@ from safegate.github.client import GitHubApiError
 from safegate.report import build_report
 
 
+def test_action_reads_github_inputs_with_hyphens(monkeypatch) -> None:
+    from safegate.github.action import _input
+
+    monkeypatch.setenv("INPUT_GITHUB-TOKEN", "test-token")
+    monkeypatch.setenv("INPUT_FAIL-ON", "review")
+    monkeypatch.setenv("INPUT_PG-VERSION", "15")
+
+    assert _input("github-token") == "test-token"
+    assert _input("fail-on") == "review"
+    assert _input("pg-version") == "15"
+
+
 def _serialized_report(scan_sql_fixture) -> str:
     result = scan_sql_fixture("safe/clean.sql")
     return build_report([result]).model_dump_json()

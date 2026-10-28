@@ -28,8 +28,12 @@ _EMPTY_REPORT: dict[str, Any] = {
 
 
 def _input(name: str, default: str = "") -> str:
-    normalized = name.upper().replace("-", "_")
-    return os.environ.get(f"INPUT_{normalized}", default)
+    suffixes = dict.fromkeys((name.upper().replace("-", "_"), name.upper()))
+    for suffix in suffixes:
+        value = os.environ.get(f"INPUT_{suffix}", "")
+        if value:
+            return value
+    return default
 
 
 def _read_report(stdout: str) -> dict[str, Any]:
