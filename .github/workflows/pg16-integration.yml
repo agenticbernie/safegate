@@ -1,0 +1,64 @@
+name: PostgreSQL 16 integration oracle
+
+on:
+  pull_request:
+  push:
+
+permissions:
+  contents: read
+
+jobs:
+  pg16-oracle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Official postgres:16.15-alpine multi-platform index; tested on linux/amd64.
+      PG16_IMAGE: postgres:16.15-alpine@sha256:0cefaabd882e42bcb2a2f3dc56d3ce4770560ba62fd7f197f1a2e008fd5731ab
+      SAFEGATE_TEST_CLI_IMAGE: safegate-pg16-oracle-cli:latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # Networked preparation is separate from the isolated test run.
+      - name: Pre-pull the pinned PostgreSQL image
+        run: docker pull --platform=linux/amd64 "$PG16_IMAGE"
+
+      - name: Build scanner image for the offline CLI test
+        run: docker build --tag "$SAFEGATE_TEST_CLI_IMAGE" .
+
+      - name: Prepare isolated test runner image
+        run: |
+          cat > "$RUNNER_TEMP/Dockerfile.pg16-oracle" <<'EOF'
+          FROM docker:28-cli AS dockercli
+          FROM ghcr.io/astral-sh/uv:0.13.5 AS uv
+          FROM python:3.12-slim
+          COPY --from=dockercli /usr/local/bin/docker /usr/local/bin/docker
+          COPY --from=uv /uv /bin/uv
+          WORKDIR /opt/safegate
+          ENV UV_PROJECT_ENVIRONMENT=/opt/safegate/.venv UV_LINK_MODE=copy
+          COPY pyproject.toml uv.lock README.md ./
+          COPY src ./src
+          RUN uv sync --locked --all-groups --no-editable
+          EOF
+          docker build --file "$RUNNER_TEMP/Dockerfile.pg16-oracle" --tag safegate-pg16-oracle-runner:local .
+
+      - name: Require cached images
+        run: |
+          docker image inspect "$PG16_IMAGE" >/dev/null
+          docker image inspect "$SAFEGATE_TEST_CLI_IMAGE" >/dev/null
+          docker image inspect safegate-pg16-oracle-runner:local >/dev/null
+
+      # The runner and every test-created container have no network. The Docker
+      # socket is for local disposable sibling containers, never for SafeGate.
+      - name: Run the oracle without network access
+        run: |
+          docker run --rm --pull=never --network=none \
+            --mount "type=bind,source=$GITHUB_WORKSPACE,target=/workspace,readonly" \
+            --mount "type=bind,source=$RUNNER_TEMP,target=$RUNNER_TEMP" \
+            --mount type=bind,source=/var/run/docker.sock,target=/var/run/docker.sock \
+            --workdir /workspace \
+            --env "TMPDIR=$RUNNER_TEMP" \
+            --env PYTHONDONTWRITEBYTECODE=1 \
+            --env SAFEGATE_PG16_REQUIRED=1 \
+            --env "SAFEGATE_TEST_CLI_IMAGE=$SAFEGATE_TEST_CLI_IMAGE" \
+            safegate-pg16-oracle-runner:local \
+            uv run --offline --no-sync pytest -p no:cacheprovider tests/integration/
