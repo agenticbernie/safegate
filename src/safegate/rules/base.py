@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Literal, Protocol
 
 if TYPE_CHECKING:
     from safegate.parser.postgres import ParsedStatement
+    from safegate.rules.pg16_behavior import LockImpact
 
 Severity = Literal["low", "medium", "high"]
 Decision = Literal["safe", "review", "block"]
@@ -28,6 +29,10 @@ class Finding:
     location: SourceLocation
     confidence: float
     evidence: str
+    lock_impact: tuple[LockImpact, ...] = ()
+    default_volatility: Literal["immutable", "stable", "volatile", "unknown"] = (
+        "unknown"
+    )
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.confidence <= 1.0:

@@ -21,6 +21,9 @@ app = typer.Typer(
 )
 _PATTERN_ARGUMENT = typer.Argument(..., help="SQL file, directory, or recursive glob.")
 _FORMAT_OPTION = typer.Option("text", "--format", help="Report format.")
+_REPORT_SCHEMA_OPTION = typer.Option(
+    "1.0", "--report-schema", help="JSON report schema version."
+)
 _PG_VERSION_OPTION = typer.Option(
     None,
     "--pg-version",
@@ -46,6 +49,7 @@ def scan_command(
     pg_version: int | None = _PG_VERSION_OPTION,
     fail_on: FailOn = _FAIL_ON_OPTION,
     config_path: Path = _CONFIG_OPTION,
+    report_schema: Literal["1.0", "2.0"] = _REPORT_SCHEMA_OPTION,
 ) -> None:
     try:
         config = load_config(config_path, pg_version_override=pg_version)
@@ -62,7 +66,7 @@ def scan_command(
         raise typer.Exit(code=EXIT_TOOL_ERROR) from error
 
     if output_format == "json":
-        typer.echo(report_json(results), nl=False)
+        typer.echo(report_json(results, schema_version=report_schema), nl=False)
     else:
         typer.echo(report_text(results), nl=False)
 

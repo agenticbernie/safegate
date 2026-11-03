@@ -14,7 +14,7 @@ A normal `CREATE INDEX` can block writes, and an unbounded `UPDATE` can touch ev
 - **AST parsing:** Powered by `pglast` AST, not brittle regex. The parser uses PostgreSQL 16 grammar; `--pg-version` sets the target version used by version-sensitive rules.
 - **Private by default:** **Your SQL and schema NEVER leave your machine or CI runner.** The scanner has no network calls or telemetry. When GitHub reporting is enabled, the Action sends finding metadata (status, rule, file/line, evidence, and recommendation) to GitHub for the PR comment and check. It does not upload source SQL or schema.
 - **10 migration risk rules:** SG-001 through SG-010 cover indexes, constraints, table rewrites, destructive DDL/DML, and transaction boundaries. Findings are risk signals, not a guarantee that a migration is safe; version-dependent or unknown behavior remains `REVIEW` or `UNKNOWN`.
-- **Repeatable output:** Versioned JSON reports with deterministic ordering, plus idempotent GitHub PR comments and check runs.
+- **Repeatable output:** Versioned JSON reports with deterministic ordering, plus idempotent GitHub PR comments and check runs. Opt-in schema 2.0 adds PostgreSQL 16 lock facts and explicitly unknown rewrite and contention fields.
 - **Three run modes:** Python CLI, GitHub Action, or Docker. The local Docker image runs as non-root and scans with networking disabled.
 
 ## Quick start
@@ -32,8 +32,13 @@ By default, `--fail-on block` exits `1` for a `BLOCK` result. Use `--fail-on rev
 
 ```sh
 safegate scan "db/migrations/**/*.sql" --format json --pg-version 16 --fail-on review
+safegate scan "db/migrations/**/*.sql" --format json --report-schema 2.0
 safegate doctor
 ```
+
+JSON schema 1.0 remains the default, including for the GitHub Action. Schema 2.0 is opt-in; strict 1.0 consumers must continue using the default. Both formats use the same findings, decisions, status and exit codes. SG-010 now also blocks `DROP INDEX CONCURRENTLY` inside a transaction, which older releases did not detect.
+
+Schema 2.0 reports required table locks and whether they conflict with ordinary reads and writes, where these can be determined from PostgreSQL 16 syntax. Lock conflicts describe potential blocking, not observed contention; actual contention is always unknown. A default expression's reported volatility describes a small set of explicitly qualified built-in calls, not implicit casts or a guarantee of a table rewrite. Column type changes remain unknown when the old type and typmod are unavailable. No database connection is used.
 
 ### GitHub Action
 
@@ -80,15 +85,15 @@ docker run --rm --network=none \
 | ID | Rule | Default decision | Description |
 | --- | --- | --- | --- |
 | SG-001 | `CREATE INDEX` without `CONCURRENTLY` | BLOCK | Index creation may block writes. |
-| SG-002 | `DROP INDEX` without `CONCURRENTLY` | BLOCK | Index removal may block writes. |
-| SG-003 | Add primary key or unique constraint | BLOCK | `ALTER TABLE` builds a supporting index. |
+| SG-002 | `DROP INDEX` without `CONCURRENTLY` | BLOCK | Index removal may block reads and writes. |
+| SG-003 | Add primary key or unique constraint | BLOCK | `ALTER TABLE` builds a supporting index or attaches an existing one, while requiring an exclusive lock. |
 | SG-004 | Add column with a default | REVIEW | Fast-path behavior depends on PostgreSQL version. |
 | SG-005 | Set or add `NOT NULL` | REVIEW | Existing rows may need validation. |
 | SG-006 | Change a column type | REVIEW | Conversion may rewrite a table or indexes. |
 | SG-007 | Add `CHECK` or foreign key without `NOT VALID` | REVIEW | Constraint validation can scan existing rows. |
 | SG-008 | `VACUUM FULL`, `CLUSTER`, or `REINDEX` | BLOCK / REVIEW | Decision depends on operation and options. |
 | SG-009 | Destructive DDL or unbounded DML | BLOCK / REVIEW | Unscoped changes can affect all rows. |
-| SG-010 | Concurrent index inside a transaction | BLOCK | `CONCURRENTLY` cannot run in a transaction block. |
+| SG-010 | Concurrent index creation or removal inside a transaction | BLOCK | `CONCURRENTLY` cannot run in a transaction block. |
 
 `WHERE FALSE` updates and deletes are treated as no-ops. A predicate that cannot be proven safe is reviewed rather than assumed safe. By default, Safegate conservatively treats each migration file as transactional for SG-010; configure `transactional = false` only when your migration runner executes files outside transactions.
 
@@ -111,7 +116,7 @@ Pass another policy with `--config path/to/policy.toml`. The CLI `--pg-version` 
 ## Release and roadmap
 
 - [Safegate v0.1.0 release notes](https://github.com/agenticbernie/safegate/releases/tag/v0.1.0)
-- v0.2.0 goals: optional read-only runtime metadata and opt-in, local AI suggestions. Neither feature is part of v0.1.0.
+- v0.2.0 focuses on context-aware static analysis. The earlier runtime metadata and local AI roadmap is superseded; v0.2.0 does not connect to a database or collect telemetry. Table-size hints and migration-history inference are deferred.
 
 ## Contributing
 

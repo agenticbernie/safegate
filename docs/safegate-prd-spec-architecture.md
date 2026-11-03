@@ -1,5 +1,7 @@
 # Safegate — PRD, Spec & Technical Architecture
 
+> The runtime metadata and AI roadmap in this historical document is superseded by the static-only [v0.2.0 implementation plan](v0.2.0-implementation-plan.md).
+
 > **Khuyến nghị:** Ship CLI phân tích tĩnh trước, đóng gói thành Docker GitHub Action chạy trên runner của khách hàng. Không xây SaaS control plane trong MVP; đó là cách nhanh nhất để chứng minh có người trả tiền mà không phá privacy.
 
 ## Phạm vi và nguyên tắc
