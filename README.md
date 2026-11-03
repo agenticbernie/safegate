@@ -92,10 +92,12 @@ docker run --rm --network=none \
 | SG-006 | Change a column type | REVIEW | Conversion may rewrite a table or indexes. |
 | SG-007 | Add `CHECK` or foreign key without `NOT VALID` | REVIEW | Constraint validation can scan existing rows. |
 | SG-008 | `VACUUM FULL`, `CLUSTER`, or `REINDEX` | BLOCK / REVIEW | Decision depends on operation and options. |
-| SG-009 | Destructive DDL or unbounded DML | BLOCK / REVIEW | Unscoped changes can affect all rows. |
+| SG-009 | Destructive DDL or DML | BLOCK / REVIEW | Unbounded changes are blocked; MERGE, conflict updates, and joins with unknown row scope are reviewed. |
 | SG-010 | Concurrent index creation or removal inside a transaction | BLOCK | `CONCURRENTLY` cannot run in a transaction block. |
 
 `WHERE FALSE` updates and deletes are treated as no-ops. A predicate that cannot be proven safe is reviewed rather than assumed safe. By default, Safegate conservatively treats each migration file as transactional for SG-010; configure `transactional = false` only when your migration runner executes files outside transactions.
+
+SG-009 now reports MERGE statements with modifying actions and `INSERT ... ON CONFLICT DO UPDATE` as REVIEW; these previously produced no SG-009 finding. Joined updates and deletes remain BLOCK when the existing unbounded policy applies. Table-level `ROW EXCLUSIVE` lock compatibility does not rule out row-level blocking.
 
 ## Configuration
 

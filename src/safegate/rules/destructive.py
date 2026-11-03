@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
@@ -12,6 +13,7 @@ from safegate.rules.base import (
     finding_for,
     qualified_name,
 )
+from safegate.rules.pg16_behavior import LockImpact, analyze_statement
 
 _UNKNOWN = object()
 
@@ -251,10 +253,53 @@ class DestructiveStatementRule:
                     )
                 else:
                     decision = "review"
-                    message = f"{node_type.removesuffix('Stmt')} predicate row scope is unknown."
+                    join = getattr(
+                        node,
+                        "fromClause" if node_type == "UpdateStmt" else "usingClause",
+                        None,
+                    )
+                    message = (
+                        f"{node_type.removesuffix('Stmt')} "
+                        f"{'join' if join else 'predicate'} row scope is unknown."
+                    )
                     evidence = f"AST {node_type}: WHERE exists but its row scope cannot be proven statically."
+                    if join:
+                        evidence += " A FROM/USING join does not prove row scope."
+        elif node_type == "MergeStmt":
+            actions = tuple(
+                getattr(getattr(clause, "commandType", None), "name", "")
+                for clause in (getattr(node, "mergeWhenClauses", None) or ())
+            )
+            if actions and all(action == "CMD_NOTHING" for action in actions):
+                return []
+            object_names = (qualified_name(getattr(node, "relation", None)) or "",)
+            decision = "review"
+            message = "MERGE may modify rows; target row scope is unknown."
+            evidence = "AST MergeStmt contains a modifying or unknown action; join and branch conditions do not prove row scope. Row-level locks may also block writers."
+        elif node_type == "InsertStmt":
+            conflict = getattr(node, "onConflictClause", None)
+            if (
+                conflict is None
+                or getattr(getattr(conflict, "action", None), "name", "")
+                == "ONCONFLICT_NOTHING"
+            ):
+                return []
+            object_names = (qualified_name(getattr(node, "relation", None)) or "",)
+            decision = "review"
+            message = "INSERT ON CONFLICT may update rows; conflict scope is unknown."
+            evidence = "AST InsertStmt has an ON CONFLICT update or unknown action; affected row scope cannot be proven statically. Row-level locks may also block writers."
         else:
             return []
+
+        policy_names = object_names
+        if len(object_names) > 1:
+            policy_names = tuple(
+                name
+                for name in object_names
+                if not ctx.is_allowlisted(self.rule_id, (name,))
+            )
+            if not policy_names:
+                return []
 
         finding = finding_for(
             statement=statement,
@@ -268,6 +313,38 @@ class DestructiveStatementRule:
             ),
             confidence=0.98 if decision == "block" else 0.55,
             evidence=evidence,
-            object_names=object_names,
+            object_names=policy_names,
         )
-        return [finding] if finding is not None else []
+        if finding is None:
+            return []
+
+        if node_type in {"DropStmt", "TruncateStmt"}:
+            # https://www.postgresql.org/docs/16/explicit-locking.html
+            # https://www.postgresql.org/docs/16/sql-truncate.html
+            conditional = node_type == "DropStmt" and bool(
+                getattr(node, "missing_ok", False)
+            )
+            impacts = tuple(
+                LockImpact(
+                    relation=name or None,
+                    required_mode="ACCESS EXCLUSIVE" if ctx.pg_version == 16 else None,
+                    plain_read_conflict=True if ctx.pg_version == 16 else None,
+                    ordinary_write_conflict=True if ctx.pg_version == 16 else None,
+                    evidence_confidence=("conditional" if conditional else "verified")
+                    if ctx.pg_version == 16
+                    else "unknown",
+                    assumptions=("if the table exists",) if conditional else (),
+                )
+                for name in (object_names or ("",))
+            )
+        else:
+            # https://www.postgresql.org/docs/16/explicit-locking.html#LOCKING-TABLES
+            impacts = analyze_statement(node, pg_version=ctx.pg_version) or (
+                LockImpact(
+                    relation=None,
+                    required_mode=None,
+                    plain_read_conflict=None,
+                    ordinary_write_conflict=None,
+                ),
+            )
+        return [replace(finding, lock_impact=impacts)]

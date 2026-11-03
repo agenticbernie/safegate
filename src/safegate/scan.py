@@ -112,7 +112,7 @@ def scan_sql(
                         findings.append(
                             replace(
                                 finding,
-                                lock_impact=impacts,
+                                lock_impact=finding.lock_impact or impacts,
                                 default_volatility=volatility,
                             )
                         )
