@@ -15,7 +15,33 @@ import pytest
 from safegate.rules.conversion_matrix import ColumnType, classify_conversion
 from safegate.scan import scan_sql
 
+from . import conftest as harness
 from .conftest import CLI_IMAGE, Database, Session, docker, require_image
+
+
+def test_readiness_waits_for_initialization_server_to_stop(monkeypatch) -> None:
+    calls: list[str] = []
+    log_count = 0
+    ready_count = 0
+
+    def fake_docker(*args: str, **kwargs: object) -> subprocess.CompletedProcess[str]:
+        nonlocal log_count, ready_count
+        calls.append(args[0])
+        if args[0] == "logs":
+            log_count += 1
+            output = (
+                "temporary server accepts connections"
+                if log_count == 1
+                else "PostgreSQL init process complete; ready for start up."
+            )
+            return subprocess.CompletedProcess(args, 0, output, "")
+        ready_count += 1
+        return subprocess.CompletedProcess(args, 1 if ready_count == 1 else 0, "", "")
+
+    monkeypatch.setattr(harness, "docker", fake_docker)
+    monkeypatch.setattr(harness.time, "sleep", lambda _: None)
+    harness.wait_for_postgres("fixture")
+    assert calls == ["logs", "logs", "exec", "logs", "exec"]
 
 
 def wait_for_lock(

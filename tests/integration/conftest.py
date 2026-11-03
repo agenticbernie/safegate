@@ -23,9 +23,15 @@ TIMEOUT = 30.0
 def docker(
     *args: str, check: bool = True, timeout: float = TIMEOUT
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["docker", *args], capture_output=True, text=True, check=check, timeout=timeout
+    result = subprocess.run(
+        ["docker", *args], capture_output=True, text=True, check=False, timeout=timeout
     )
+    if check and result.returncode:
+        raise RuntimeError(
+            f"Docker command failed ({result.returncode}): {args!r}; "
+            f"stdout={result.stdout!r}; stderr={result.stderr!r}"
+        )
+    return result
 
 
 def require_image(image: str) -> None:
@@ -39,6 +45,33 @@ def require_image(image: str) -> None:
     if REQUIRED:
         pytest.fail(message, pytrace=False)
     pytest.skip(message)
+
+
+def wait_for_postgres(name: str) -> None:
+    # The image starts and stops a temporary server during initdb; pg_isready
+    # can otherwise succeed before that server is shut down.
+    # https://github.com/docker-library/postgres/blob/9d15534160ade17f2b6c455a39ee967c49b1937d/docker-entrypoint.sh
+    marker = "PostgreSQL init process complete; ready for start up."
+    deadline = time.monotonic() + TIMEOUT
+    logs = ""
+    while time.monotonic() < deadline:
+        result = docker("logs", name, check=False)
+        logs = result.stdout + result.stderr
+        if marker in logs:
+            ready = docker(
+                "exec",
+                name,
+                "pg_isready",
+                "-h",
+                "/var/run/postgresql",
+                "-U",
+                "postgres",
+                check=False,
+            )
+            if ready.returncode == 0:
+                return
+        time.sleep(0.2)
+    pytest.fail(f"PG16 startup watchdog expired: {logs}", pytrace=False)
 
 
 class Session:
@@ -177,27 +210,7 @@ def pg_container() -> Iterator[str]:
                 f"Could not start isolated PG16 container: {result.stderr}",
                 pytrace=False,
             )
-        deadline = time.monotonic() + TIMEOUT
-        while time.monotonic() < deadline:
-            ready = docker(
-                "exec",
-                name,
-                "pg_isready",
-                "-h",
-                "/var/run/postgresql",
-                "-U",
-                "postgres",
-                check=False,
-            )
-            if ready.returncode == 0:
-                break
-            time.sleep(0.2)
-        else:
-            logs = docker("logs", name, check=False)
-            pytest.fail(
-                f"PG16 startup watchdog expired: {logs.stdout}\n{logs.stderr}",
-                pytrace=False,
-            )
+        wait_for_postgres(name)
         config = docker(
             "exec",
             name,
