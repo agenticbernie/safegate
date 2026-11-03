@@ -3,14 +3,16 @@ from __future__ import annotations
 import glob
 import os
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Literal
 
 from safegate.config import SafegateConfig
 from safegate.parser.postgres import parse_postgres
 from safegate.rules.base import AnalysisContext, Finding, SourceLocation
+from safegate.rules.pg16_behavior import analyze_statement
 from safegate.rules.registry import get_rules
+from safegate.rules.volatility_registry import Volatility, classify_default
 
 ScanStatus = Literal["SAFE", "REVIEW", "BLOCK", "UNKNOWN"]
 
@@ -72,7 +74,48 @@ def scan_sql(
     for parsed_statement in parsed.statements:
         for rule in get_rules():
             if context.rule_enabled(rule.rule_id):
-                findings.extend(rule.evaluate(parsed_statement, context))
+                evaluated = rule.evaluate(parsed_statement, context)
+                if evaluated:
+                    impacts = analyze_statement(
+                        parsed_statement.statement, pg_version=policy.pg_version
+                    )
+                    for finding in evaluated:
+                        volatility: Volatility = "unknown"
+                        if finding.rule_id == "SG-004":
+                            expressions = [
+                                getattr(constraint, "raw_expr", None)
+                                for command in getattr(
+                                    parsed_statement.statement, "cmds", ()
+                                )
+                                or ()
+                                if getattr(
+                                    getattr(command, "subtype", None), "name", ""
+                                )
+                                == "AT_AddColumn"
+                                for constraint in (
+                                    getattr(
+                                        getattr(command, "def_", None),
+                                        "constraints",
+                                        None,
+                                    )
+                                    or ()
+                                )
+                                if getattr(
+                                    getattr(constraint, "contype", None), "name", ""
+                                )
+                                == "CONSTR_DEFAULT"
+                            ]
+                            if len(expressions) == 1:
+                                volatility = classify_default(
+                                    expressions[0], pg_version=policy.pg_version
+                                )
+                        findings.append(
+                            replace(
+                                finding,
+                                lock_impact=impacts,
+                                default_volatility=volatility,
+                            )
+                        )
     ordered = tuple(
         sorted(
             findings,

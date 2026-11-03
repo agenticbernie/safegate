@@ -107,6 +107,65 @@ def test_drop_index_without_concurrently_is_sg002_block(fixture_path) -> None:
     assert code == 1
     assert payload["status"] == "BLOCK"
     assert [finding["rule_id"] for finding in payload["findings"]] == ["SG-002"]
+    assert "reads" in payload["findings"][0]["message"]
+
+
+def test_add_constraint_using_index_is_still_block_but_does_not_build_index() -> None:
+    from safegate.scan import scan_sql
+
+    result = scan_sql(
+        "ALTER TABLE t ADD CONSTRAINT u UNIQUE USING INDEX existing;", file="m.sql"
+    )
+    assert result.status == "BLOCK"
+    assert "existing index" in result.findings[0].message
+    assert "Create a unique index" not in result.findings[0].recommendation
+
+
+def test_drop_index_concurrently_in_transaction_is_block() -> None:
+    from safegate.config import SafegateConfig
+    from safegate.scan import scan_sql
+
+    sql = "DROP INDEX CONCURRENTLY public.i;"
+    result = scan_sql(sql, file="m.sql")
+    assert result.status == "BLOCK"
+    assert result.findings[0].rule_id == "SG-010"
+    assert (
+        scan_sql(sql, file="m.sql", config=SafegateConfig(transactional=False)).status
+        == "SAFE"
+    )
+
+
+def test_mixed_existing_and_new_constraint_description() -> None:
+    from safegate.scan import scan_sql
+
+    result = scan_sql(
+        "ALTER TABLE t ADD CONSTRAINT a UNIQUE USING INDEX ix, ADD CONSTRAINT b UNIQUE (x)",
+        file="m.sql",
+    )
+    assert result.status == "BLOCK"
+    assert "existing index attachment and index creation" in result.findings[0].message
+
+
+def test_drop_index_concurrently_explicit_transaction_and_allowlist() -> None:
+    from safegate.config import RuleConfig, SafegateConfig
+    from safegate.scan import scan_sql
+
+    policy = SafegateConfig(transactional=False)
+    result = scan_sql(
+        "BEGIN; DROP INDEX CONCURRENTLY public.i; COMMIT;", file="m.sql", config=policy
+    )
+    assert result.status == "BLOCK"
+    policy = SafegateConfig(
+        transactional=False, rules={"SG-010": RuleConfig(allowlist=("public.i",))}
+    )
+    assert (
+        scan_sql(
+            "BEGIN; DROP INDEX CONCURRENTLY public.i; COMMIT;",
+            file="m.sql",
+            config=policy,
+        ).status
+        == "SAFE"
+    )
 
 
 def test_rule_configuration_can_disable_rule(

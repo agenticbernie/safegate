@@ -2,14 +2,52 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Literal
 
+import pytest
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from typer.testing import CliRunner
 
 from safegate.cli import app
-from safegate.report import report_json
+from safegate.report import ScanReport, ScanReportV2, report_json
 from safegate.scan import ScanResult
 
 runner = CliRunner()
+
+
+# Frozen from v0.1.0: strict consumers must continue to accept default JSON.
+class V1Location(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    line: int = Field(ge=1)
+    column: int = Field(ge=1)
+
+
+class V1Finding(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    rule_id: str
+    severity: Literal["low", "medium", "high"]
+    decision: Literal["safe", "review", "block"]
+    file: str
+    location: V1Location
+    message: str
+    recommendation: str
+    evidence: str
+    confidence: float = Field(ge=0.0, le=1.0)
+
+
+class V1Summary(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    safe: int = Field(ge=0)
+    review: int = Field(ge=0)
+    block: int = Field(ge=0)
+
+
+class V1Report(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+    schema_version: Literal["1.0"] = "1.0"
+    status: Literal["SAFE", "REVIEW", "BLOCK", "UNKNOWN"]
+    summary: V1Summary
+    findings: tuple[V1Finding, ...]
 
 
 def _assert_sorted_keys(value: object) -> None:
@@ -162,3 +200,62 @@ def test_doctor_reports_the_pinned_parser_grammar() -> None:
 
     assert result.exit_code == 0
     assert "PostgreSQL 16" in result.stdout
+
+
+def test_opt_in_v2_reports_lock_facts_without_changing_v1(fixture_path) -> None:
+    path = str(fixture_path("block/drop_index.sql"))
+    v1 = runner.invoke(app, ["scan", path, "--format", "json"])
+    v2 = runner.invoke(
+        app, ["scan", path, "--format", "json", "--report-schema", "2.0"]
+    )
+    old, new = json.loads(v1.stdout), json.loads(v2.stdout)
+    assert v1.exit_code == v2.exit_code == 1
+    assert old["schema_version"] == "1.0"
+    assert "lock_impact" not in old["findings"][0]
+    assert new["schema_version"] == "2.0"
+    assert new["status"] == old["status"]
+    impact = new["findings"][0]["lock_impact"][0]
+    assert impact["required_mode"] == "ACCESS EXCLUSIVE"
+    assert impact["plain_read_conflict"] is True
+    assert impact["runtime_contention"] == "unknown"
+    assert new["findings"][0]["context_hints_used"] == []
+    ScanReport.model_validate_json(v1.stdout)
+    V1Report.model_validate_json(v1.stdout)
+    ScanReportV2.model_validate_json(v2.stdout)
+    with pytest.raises(ValidationError):
+        V1Report.model_validate_json(v2.stdout)
+
+
+def test_v2_parser_failure_retains_unknown_without_lock_claim(fixture_path) -> None:
+    path = str(fixture_path("block/malformed.sql"))
+    result = runner.invoke(
+        app, ["scan", path, "--format", "json", "--report-schema", "2.0"]
+    )
+    payload = json.loads(result.stdout)
+    assert result.exit_code == 2
+    assert payload["status"] == "UNKNOWN"
+    assert payload["findings"][0]["lock_impact"] is None
+    assert payload["findings"][0]["evidence_confidence"] == {
+        "lock": "unknown",
+        "rewrite": "unknown",
+    }
+    v1 = runner.invoke(app, ["scan", path, "--format", "json"])
+    V1Report.model_validate_json(v1.stdout)
+
+
+def test_action_fallback_remains_compatible_with_v1_consumer() -> None:
+    from safegate.github.action import _EMPTY_REPORT
+
+    V1Report.model_validate_json(json.dumps(_EMPTY_REPORT))
+
+
+def test_v2_serialization_preserves_v1_findings(fixture_path) -> None:
+    path = str(fixture_path("review/add_column_default.sql"))
+    v1 = runner.invoke(app, ["scan", path, "--format", "json"])
+    v2 = runner.invoke(
+        app, ["scan", path, "--format", "json", "--report-schema", "2.0"]
+    )
+    old, new = json.loads(v1.stdout), json.loads(v2.stdout)
+    for key, value in old["findings"][0].items():
+        assert new["findings"][0][key] == value
+    assert new["findings"][0]["lock_impact"][0]["rewrite"] == "unknown"

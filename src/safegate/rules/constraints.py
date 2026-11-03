@@ -24,12 +24,30 @@ class AddKeyConstraintRule:
     ) -> list[Finding]:
         node = statement.statement
         constraints = _added_constraints(node)
-        if not any(
-            getattr(getattr(constraint, "contype", None), "name", "")
-            in {"CONSTR_PRIMARY", "CONSTR_UNIQUE"}
+        keys = [
+            constraint
             for constraint in constraints
-        ):
+            if getattr(getattr(constraint, "contype", None), "name", "")
+            in {"CONSTR_PRIMARY", "CONSTR_UNIQUE"}
+        ]
+        if not keys:
             return []
+        has_existing = any(
+            getattr(constraint, "indexname", None) for constraint in keys
+        )
+        has_new = any(not getattr(constraint, "indexname", None) for constraint in keys)
+        # https://www.postgresql.org/docs/16/sql-altertable.html
+        if has_existing and not has_new:
+            message = "Adding PRIMARY KEY or UNIQUE attaches an existing index and requires an ACCESS EXCLUSIVE lock."
+            recommendation = "Verify index eligibility and column nullability; attachment can require a table scan."
+        elif has_existing:
+            message = "Adding PRIMARY KEY or UNIQUE includes both existing index attachment and index creation."
+            recommendation = "Verify existing index eligibility; consider concurrent creation for new indexes and review ALTER TABLE locks."
+        else:
+            message = (
+                "Adding PRIMARY KEY or UNIQUE creates an index inside ALTER TABLE."
+            )
+            recommendation = "Create a unique index concurrently, then attach the constraint if the migration workflow supports it."
         table = qualified_name(getattr(node, "relation", None))
         finding = finding_for(
             statement=statement,
@@ -37,10 +55,8 @@ class AddKeyConstraintRule:
             rule_id=self.rule_id,
             severity="high",
             decision="block",
-            message="Adding PRIMARY KEY or UNIQUE creates an index inside ALTER TABLE.",
-            recommendation=(
-                "Create a unique index concurrently, then attach the constraint if the migration workflow supports it."
-            ),
+            message=message,
+            recommendation=recommendation,
             confidence=0.96,
             evidence="AST AlterTableCmd: added PRIMARY KEY or UNIQUE constraint.",
             object_names=(table or "",),

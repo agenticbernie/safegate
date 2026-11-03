@@ -50,6 +50,42 @@ class ScanReport(BaseModel):
     findings: tuple[FindingReport, ...]
 
 
+class LockImpactReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    relation: str | None
+    required_mode: str | None
+    plain_read_conflict: bool | None
+    ordinary_write_conflict: bool | None
+    runtime_contention: Literal["unknown"]
+    rewrite: Literal["required", "not_required", "unknown"]
+    evidence_confidence: Literal["verified", "conditional", "unknown"]
+    assumptions: tuple[str, ...]
+
+
+class EvidenceConfidenceReport(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    lock: Literal["verified", "conditional", "unknown"]
+    rewrite: Literal["verified", "conditional", "unknown"]
+
+
+class FindingReportV2(FindingReport):
+    lock_impact: tuple[LockImpactReport, ...] | None
+    context_hints_used: tuple[()] = ()
+    evidence_confidence: EvidenceConfidenceReport
+    default_volatility: Literal["immutable", "stable", "volatile", "unknown"]
+
+
+class ScanReportV2(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True, frozen=True)
+
+    schema_version: Literal["2.0"] = "2.0"
+    status: Literal["SAFE", "REVIEW", "BLOCK", "UNKNOWN"]
+    summary: SummaryReport
+    findings: tuple[FindingReportV2, ...]
+
+
 def _report_finding(finding: Finding) -> FindingReport:
     return FindingReport(
         rule_id=finding.rule_id,
@@ -67,6 +103,20 @@ def _report_finding(finding: Finding) -> FindingReport:
     )
 
 
+def _ordered_findings(results: Sequence[ScanResult]) -> list[Finding]:
+    return sorted(
+        (finding for result in results for finding in result.findings),
+        key=lambda finding: (
+            finding.location.file,
+            finding.location.line,
+            finding.location.column,
+            finding.rule_id,
+            finding.severity,
+            finding.evidence,
+        ),
+    )
+
+
 def build_report(results: Sequence[ScanResult]) -> ScanReport:
     if any(result.status == "UNKNOWN" for result in results):
         status: ScanStatus = "UNKNOWN"
@@ -80,17 +130,7 @@ def build_report(results: Sequence[ScanResult]) -> ScanReport:
     safe_count = sum(result.status == "SAFE" for result in results)
     review_count = sum(result.status in {"REVIEW", "UNKNOWN"} for result in results)
     block_count = sum(result.status == "BLOCK" for result in results)
-    findings = sorted(
-        (finding for result in results for finding in result.findings),
-        key=lambda finding: (
-            finding.location.file,
-            finding.location.line,
-            finding.location.column,
-            finding.rule_id,
-            finding.severity,
-            finding.evidence,
-        ),
-    )
+    findings = _ordered_findings(results)
     return ScanReport(
         status=status,
         summary=SummaryReport(safe=safe_count, review=review_count, block=block_count),
@@ -98,10 +138,56 @@ def build_report(results: Sequence[ScanResult]) -> ScanReport:
     )
 
 
-def report_json(results: Sequence[ScanResult]) -> str:
+def build_report_v2(results: Sequence[ScanResult]) -> ScanReportV2:
+    original = build_report(results)
+    upgraded: list[FindingReportV2] = []
+    for source, legacy in zip(
+        _ordered_findings(results), original.findings, strict=True
+    ):
+        impacts = tuple(
+            LockImpactReport(
+                relation=impact.relation,
+                required_mode=impact.required_mode,
+                plain_read_conflict=impact.plain_read_conflict,
+                ordinary_write_conflict=impact.ordinary_write_conflict,
+                runtime_contention=impact.runtime_contention,
+                rewrite=impact.rewrite,
+                evidence_confidence=impact.evidence_confidence,
+                assumptions=impact.assumptions,
+            )
+            for impact in source.lock_impact
+        )
+        confidence: Literal["verified", "conditional", "unknown"] = "verified"
+        if not impacts or any(
+            impact.evidence_confidence == "unknown" for impact in impacts
+        ):
+            confidence = "unknown"
+        elif any(impact.evidence_confidence == "conditional" for impact in impacts):
+            confidence = "conditional"
+        upgraded.append(
+            FindingReportV2(
+                **legacy.model_dump(),
+                lock_impact=impacts or None,
+                evidence_confidence=EvidenceConfidenceReport(
+                    lock=confidence, rewrite="unknown"
+                ),
+                default_volatility=source.default_volatility,
+            )
+        )
+    return ScanReportV2(
+        status=original.status, summary=original.summary, findings=tuple(upgraded)
+    )
+
+
+def report_json(
+    results: Sequence[ScanResult], *, schema_version: Literal["1.0", "2.0"] = "1.0"
+) -> str:
+    report = (
+        build_report(results) if schema_version == "1.0" else build_report_v2(results)
+    )
     return (
         json.dumps(
-            build_report(results).model_dump(mode="json"),
+            report.model_dump(mode="json"),
             ensure_ascii=False,
             indent=2,
             sort_keys=True,

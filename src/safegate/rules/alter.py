@@ -41,7 +41,9 @@ class AddColumnDefaultRule:
                 break
         if not found:
             return []
-        # TODO(research): Verify constant/immutable DEFAULT fast paths by target PG version.
+        # The expression classifier does not prove catalog-dependent fast-path
+        # preconditions; keep REVIEW and the v1 evidence conservative.
+        # https://www.postgresql.org/docs/16/sql-altertable.html
         table = qualified_name(getattr(node, "relation", None))
         finding = finding_for(
             statement=statement,
@@ -119,7 +121,8 @@ class AlterColumnTypeRule:
             for command in _alter_commands(node)
         ):
             return []
-        # TODO(research): Build an evidence-backed conversion/rewrite matrix per PG version.
+        # ALTER syntax alone does not identify the previous type and typmod.
+        # https://www.postgresql.org/docs/16/sql-altertable.html
         table = qualified_name(getattr(node, "relation", None))
         finding = finding_for(
             statement=statement,
